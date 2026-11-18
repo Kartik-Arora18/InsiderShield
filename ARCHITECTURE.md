@@ -215,19 +215,6 @@ CREATE TABLE behavior_baselines (
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
--- Risk scores calculated by ML system (depends on organization and employee)
-CREATE TABLE risk_scores (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
-    score DECIMAL(5,2) NOT NULL,
-    score_level TEXT NOT NULL,
-    contributing_factors JSONB NOT NULL DEFAULT '{}',
-    model_version TEXT NOT NULL,
-    detection_id UUID REFERENCES detections(id) ON DELETE SET NULL,
-    calculated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-);
-
 -- Detection results from ML/AI analysis (depends on organization and employee)
 CREATE TABLE detections (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -246,19 +233,17 @@ CREATE TABLE detections (
     review_notes TEXT
 );
 
--- Security alerts generated from detections (depends on organization, employee, detection)
-CREATE TABLE alerts (
+-- Risk scores calculated by ML system (depends on organization and employee)
+CREATE TABLE risk_scores (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    detection_id UUID REFERENCES detections(id) ON DELETE SET NULL,
     employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
-    alert_type TEXT NOT NULL,
-    severity TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'open',
-    assigned_to UUID REFERENCES users(id) ON DELETE SET NULL,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    resolved_at TIMESTAMP WITH TIME ZONE,
-    investigation_id UUID
+    detection_id UUID REFERENCES detections(id) ON DELETE SET NULL,
+    score DECIMAL(5,2) NOT NULL,
+    score_level TEXT NOT NULL,
+    contributing_factors JSONB NOT NULL DEFAULT '{}',
+    model_version TEXT NOT NULL,
+    calculated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
 -- Investigation sessions (depends on organization, alert, investigator)
@@ -273,6 +258,21 @@ CREATE TABLE investigations (
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     status TEXT NOT NULL DEFAULT 'in_progress'
+);
+
+-- Security alerts generated from detections (depends on organization, employee, detection)
+CREATE TABLE alerts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    detection_id UUID REFERENCES detections(id) ON DELETE SET NULL,
+    employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    alert_type TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    assigned_to UUID REFERENCES users(id) ON DELETE SET NULL,
+    investigation_id UUID,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    resolved_at TIMESTAMP WITH TIME ZONE
 );
 
 -- Audit logs for compliance and security (depends on organization, user)
@@ -321,6 +321,37 @@ CREATE TABLE synthetic_scenarios (
     sample_events JSONB NOT NULL DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
+
+-- ML model versions for reproducibility (depends on organization)
+CREATE TABLE ml_models (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    model_type TEXT NOT NULL,
+    version TEXT NOT NULL,
+    algorithm TEXT NOT NULL,
+    accuracy DECIMAL(5,4),
+    precision DECIMAL(5,4),
+    recall DECIMAL(5,4),
+    f1_score DECIMAL(5,4),
+    false_positive_rate DECIMAL(5,4),
+    model_path TEXT NOT NULL,
+    training_config JSONB NOT NULL DEFAULT '{}',
+    feature_list JSONB NOT NULL DEFAULT '[]',
+    trained_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+-- Synthetic scenarios for testing and evaluation (depends on organization)
+CREATE TABLE synthetic_scenarios (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    scenario_type TEXT NOT NULL,
+    description TEXT NOT NULL,
+    severity_level TEXT NOT NULL,
+    expected_detection_rate DECIMAL(5,4),
+    sample_events JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
 ```
 
 ### Database Constraints & Indexes
@@ -331,10 +362,13 @@ CREATE INDEX idx_activity_events_org_time ON activity_events(organization_id, ev
 CREATE INDEX idx_activity_events_employee_time ON activity_events(employee_id, event_timestamp);
 CREATE INDEX idx_behavior_baselines_org_emp ON behavior_baselines(organization_id, employee_id);
 CREATE INDEX idx_detections_org_time ON detections(organization_id, detection_timestamp);
+CREATE INDEX idx_detections_employee_time ON detections(employee_id, detection_timestamp);
 CREATE INDEX idx_risk_scores_org_emp ON risk_scores(organization_id, employee_id);
 CREATE INDEX idx_users_org_active ON users(organization_id, is_active);
 CREATE INDEX idx_alerts_org_emp_status ON alerts(organization_id, employee_id, status);
+CREATE INDEX idx_alerts_employee_time ON alerts(employee_id, created_at);
 CREATE INDEX idx_audit_logs_org_time ON audit_logs(organization_id, timestamp);
+CREATE INDEX idx_audit_logs_user_time ON audit_logs(user_id, timestamp);
 
 -- Define unique constraints properly
 CREATE UNIQUE INDEX uk_users_org_username ON users(organization_id, username);
@@ -515,6 +549,228 @@ async def ingest_events(request: Request, events: List[ActivityEventCreate]):
     pass
 ```
 
+#### Authentication & Authorization (CORRECTED)
+
+**Core Roles:**
+- `SUPER_ADMIN`: Full system access across all organizations
+- `ORG_ADMIN`: Organization management, employee management, security monitoring
+- `SECURITY_ANALYST`: Event review, alert investigation, report generation
+- `AUDITOR`: Read-only access to reports and audit logs
+- `EMPLOYEE`: Self-service profile, limited activity view
+
+#### PostgreSQL Database Roles and Grants
+```sql
+-- Database roles for authentication
+CREATE ROLE app_service_user WITH LOGIN;
+CREATE ROLE authenticated_users WITH NOLOGIN;
+CREATE ROLE admin_user WITH NOLOGIN;
+
+-- Grant execute privileges
+GRANT CONNECT ON DATABASE insidershield TO app_service_user;
+GRANT USAGE ON SCHEMA public TO app_service_user, authenticated_users, admin_user;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO authenticated_users;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO admin_user;
+
+-- Enable RLS on tenant-sensitive tables
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE activity_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE employees ENABLE ROW LEVEL SECURITY;
+ALTER TABLE alerts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE detections ENABLE ROW LEVEL SECURITY;
+ALTER TABLE investigations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE risk_scores ENABLE ROW LEVEL SECURITY;
+ALTER TABLE behavior_baselines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE organizations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE roles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_roles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE event_outbox ENABLE ROW LEVEL SECURITY;
+ALTER TABLE event_dead_letter_queue ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ml_models ENABLE ROW LEVEL SECURITY;
+ALTER TABLE synthetic_scenarios ENABLE ROW LEVEL SECURITY;
+
+-- Secure RLS policies (only allow access to user's own organization)
+CREATE POLICY users_org_isolation ON users
+    FOR ALL
+    TO authenticated_users
+    USING (organization_id = current_setting('app.current_organization_id'::text));
+
+CREATE POLICY employees_org_isolation ON employees
+    FOR ALL
+    TO authenticated_users
+    USING (organization_id = current_setting('app.current_organization_id'::text));
+
+CREATE POLICY activity_events_org_isolation ON activity_events
+    FOR ALL
+    TO authenticated_users
+    USING (organization_id = current_setting('app.current_organization_id'::text));
+
+CREATE POLICY alerts_org_isolation ON alerts
+    FOR ALL
+    TO authenticated_users
+    USING (organization_id = current_setting('app.current_organization_id'::text));
+
+CREATE POLICY detections_org_isolation ON detections
+    FOR ALL
+    TO authenticated_users
+    USING (organization_id = current_setting('app.current_organization_id'::text));
+
+CREATE POLICY investigations_org_isolation ON investigations
+    FOR ALL
+    TO authenticated_users
+    USING (organization_id = current_setting('app.current_organization_id'::text));
+
+CREATE POLICY audit_logs_org_isolation ON audit_logs
+    FOR ALL
+    TO authenticated_users
+    USING (organization_id = current_setting('app.current_organization_id'::text));
+
+CREATE POLICY risk_scores_org_isolation ON risk_scores
+    FOR ALL
+    TO authenticated_users
+    USING (organization_id = current_setting('app.current_organization_id'::text));
+
+CREATE POLICY behavior_baselines_org_isolation ON behavior_baselines
+    FOR ALL
+    TO authenticated_users
+    USING (organization_id = current_setting('app.current_organization_id'::text));
+
+CREATE POLICY organizations_access_policy ON organizations
+    FOR SELECT
+    TO authenticated_users
+    USING (current_setting('app.current_organization_id'::text) IS NOT NULL);
+
+CREATE POLICY roles_org_isolation ON roles
+    FOR ALL
+    TO authenticated_users
+    USING (organization_id = current_setting('app.current_organization_id'::text));
+
+CREATE POLICY user_roles_org_isolation ON user_roles
+    FOR ALL
+    TO authenticated_users
+    USING (
+        EXISTS (SELECT 1 FROM users WHERE id = user_roles.user_id AND 
+                organization_id = current_setting('app.current_organization_id'::text)) AND
+        EXISTS (SELECT 1 FROM roles WHERE id = user_roles.role_id AND 
+                organization_id = current_setting('app.current_organization_id'::text))
+    );
+
+CREATE POLICY event_outbox_org_isolation ON event_outbox
+    FOR ALL
+    TO authenticated_users
+    USING (organization_id = current_setting('app.current_organization_id'::text));
+
+CREATE POLICY event_dead_letter_queue_org_isolation ON event_dead_letter_queue
+    FOR ALL
+    TO authenticated_users
+    USING (
+        EXISTS (SELECT 1 FROM event_outbox WHERE id = event_dead_letter_queue.outbox_id AND 
+                organization_id = current_setting('app.current_organization_id'::text))
+    );
+
+CREATE POLICY ml_models_org_isolation ON ml_models
+    FOR ALL
+    TO authenticated_users
+    USING (organization_id = current_setting('app.current_organization_id'::text));
+
+CREATE POLICY synthetic_scenarios_org_isolation ON synthetic_scenarios
+    FOR ALL
+    TO authenticated_users
+    USING (organization_id = current_setting('app.current_organization_id'::text));
+```
+
+#### Authentication & Authorization (CORRECTED)
+
+**Core Roles:**
+- `SUPER_ADMIN`: Full system access across all organizations
+- `ORG_ADMIN`: Organization management, employee management, security monitoring
+- `SECURITY_ANALYST`: Event review, alert investigation, report generation
+- `AUDITOR`: Read-only access to reports and audit logs
+- `EMPLOYEE`: Self-service profile, limited activity view
+
+#### Organization Context Management (CORRECTED)
+
+```python
+async def get_current_user(request: Request):
+    """Extract and validate JWT token from request and establish tenant context"""
+    token = request.headers.get("authorization")
+    if not token or not token.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authentication")
+    
+    token = token[7:]
+    
+    # Validate JWT with algorithm and signature verification
+    try:
+        payload = jwt.decode(
+            token,
+            PUBLIC_KEY,
+            algorithms=["RS256"],
+            options={"verify_signature": True, "verify_exp": True},
+            audience="insidershield-api",
+            issuer="insidershield-auth"
+        )
+    except jwt.InvalidTokenError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
+    
+    # Get user from database
+    user_repository = UserRepository()
+    user = await user_repository.get_by_id(UUID(payload["sub"]))
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
+    
+    # Verify organization membership
+    if "organization_id" in request.path_params:
+        requested_org = UUID(request.path_params["organization_id"])
+        user_orgs = await user_repository.get_organizations(user.id)
+        
+        if requested_org not in user_orgs:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Set tenant context using database function
+        await set_postgresql_tenant_context(request, requested_org)
+    
+    return user
+
+async def set_postgresql_tenant_context(request: Request, organization_id: UUID):
+    # Use set_config for PostgreSQL session variable
+    connection = request.state.db
+    await connection.execute(
+        "SELECT set_config('app.current_organization_id', %s, true)",
+        str(organization_id)
+    )
+```
+
+#### FastAPI Dependencies for Organization Context
+```python
+from fastapi import Depends, HTTPException, Request
+from typing import Optional, List
+
+async def get_current_user_with_tenant(
+    request: Request,
+    user_repository: UserRepository = Depends()
+):
+    """Dependency that validates user and establishes organization context"""
+    return await get_current_user(request)
+
+async def get_organization_id(
+    request: Request,
+    current_user: User = Depends(get_current_user)
+) -> Optional[UUID]:
+    """Extract and validate organization ID from request path"""
+    if "organization_id" not in request.path_params:
+        return None
+    
+    requested_org = UUID(request.path_params["organization_id"])
+    
+    # Verify user has access to this organization
+    user_orgs = await user_repository.get_organizations(current_user.id)
+    
+    if requested_org not in user_orgs:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    return requested_org
+```
+
 ## 6. Event Processing Architecture
 
 ### Event Ingestion Pipeline
@@ -654,21 +910,23 @@ def process_stored_event(self, outbox_id: UUID):
         raise self.retry(exc=e)
 ```
 
-#### Event Processing Tables
+#### Event Processing Tables (CORRECTED WITH COMPOSITION)
 ```sql
+-- Event outbox for reliable event processing with same-organization foreign keys
 CREATE TABLE event_outbox (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_data JSONB NOT NULL,
-    organization_id UUID NOT NULL REFERENCES organizations(id),
-    user_id UUID NOT NULL REFERENCES users(id),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id, organization_id) ON DELETE CASCADE,
     event_hash TEXT NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     processed_at TIMESTAMP WITH TIME ZONE,
-    process_retries INTEGER NOT NULL DEFAULT 0,
     INDEX idx_outbox_organization (organization_id),
-    INDEX idx_outbox_created_at (created_at)
+    INDEX idx_outbox_created_at (created_at),
+    CONSTRAINT uk_event_outbox_org_hash UNIQUE (organization_id, event_hash)
 );
 
+-- Dead letter queue for failed events
 CREATE TABLE event_dead_letter_queue (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     outbox_id UUID NOT NULL REFERENCES event_outbox(id) ON DELETE CASCADE,
@@ -676,6 +934,9 @@ CREATE TABLE event_dead_letter_queue (
     timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     INDEX idx_dlq_timestamp (timestamp)
 );
+
+-- Index for concurrent processing of events
+CREATE INDEX idx_event_outbox_processed_at ON event_outbox(processed_at) WHERE processed_at IS NULL;
 ```
 
 #### Failure Scenarios
@@ -1254,6 +1515,7 @@ services:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+      - NEXT_PUBLIC_APP_URL=http://localhost:3000
     depends_on:
       - backend
     restart: unless-stopped

@@ -1,0 +1,54 @@
+﻿# Environment secrets
+.env
+.env.*
+!.env.example
+InsiderShield/.env
+InsiderShield/.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and local databases
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# Test and temporary files
+.pytest_cache/
+*.tmp
+
+# Allow the application environment template
+!InsiderShield/.env.example
+
+# Local development artifacts
+InsiderShield/MAIN_PY_PATCH.txt
+architecture-review.diff
+
+InsiderShield/backend/reset_admin_password.py
+
+# Internal setup notes
+InsiderShield/PHASE2_SETUP.md
+InsiderShield/PHASE3_SETUP.md
+InsiderShield/PHASE4_SETUP.md
+InsiderShield/README.md
